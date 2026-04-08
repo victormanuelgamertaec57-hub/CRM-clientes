@@ -25,11 +25,10 @@ async function initTables() {
   await client.execute(`CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, type TEXT NOT NULL, description TEXT NOT NULL, contact_id TEXT NOT NULL REFERENCES contacts(id), deal_id TEXT REFERENCES deals(id), scheduled_at INTEGER, completed_at INTEGER, created_at INTEGER NOT NULL)`);
   await client.execute(`CREATE TABLE IF NOT EXISTS crm_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
 
-  await client.execute("DELETE FROM pipeline_stages");
   for (const s of STAGES) {
     await client.execute({
-      sql: `INSERT INTO pipeline_stages (id, name, "order", color, is_won, is_lost) VALUES (?, ?, ?, ?, ?, ?)`,
-      args: [crypto.randomUUID(), s.name, s.order, s.color, s.isWon, s.isLost],
+      sql: `INSERT OR IGNORE INTO pipeline_stages (id, name, "order", color, is_won, is_lost) SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM pipeline_stages WHERE name = ?)`,
+      args: [crypto.randomUUID(), s.name, s.order, s.color, s.isWon, s.isLost, s.name],
     });
   }
 }
