@@ -1,44 +1,13 @@
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "./schema";
-import path from "path";
-import fs from "fs";
 
-const DB_PATH = path.join(process.cwd(), "data", "crm.db");
+const client = createClient({
+  url: process.env.TURSO_DATABASE_URL!,
+  authToken: process.env.TURSO_AUTH_TOKEN!,
+});
 
-// Ensure data directory exists
-const dataDir = path.dirname(DB_PATH);
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-
-function createDatabase(): Database.Database {
-  const db = new Database(DB_PATH, { timeout: 15000 });
-
-  // Set pragmas individually with error handling
-  try {
-    db.pragma("journal_mode = WAL");
-  } catch {
-    // WAL mode might already be set by another process
-  }
-
-  try {
-    db.pragma("busy_timeout = 15000");
-  } catch {
-    // Ignore if can't set
-  }
-
-  try {
-    db.pragma("foreign_keys = ON");
-  } catch {
-    // Ignore
-  }
-
-  return db;
-}
-
-function initTables(db: Database.Database): void {
-  // Each CREATE TABLE is its own statement to minimize lock time
+async function initTables() {
   const tables = [
     `CREATE TABLE IF NOT EXISTS contacts (
       id TEXT PRIMARY KEY,
@@ -90,22 +59,13 @@ function initTables(db: Database.Database): void {
   ];
 
   for (const sql of tables) {
-    try {
-      db.exec(sql);
-    } catch {
-      // Table might already exist or DB is locked - safe to continue
-    }
+    await client.execute(sql);
   }
-}
 
-function seedDefaultStages(db: Database.Database): void {
-  try {
-    const result = db
-      .prepare("SELECT COUNT(*) as count FROM pipeline_stages")
-      .get() as { count: number } | undefined;
+  const result = await client.execute("SELECT COUNT(*) as count FROM pipeline_stages");
+  const count = result.rows[0]?.count as number;
 
-    if (!result || result.count > 0) return;
-
+  if (!count || count === 0) {
     const defaultStages = [
       { name: "Prospecto", order: 1, color: "#64748b", isWon: 0, isLost: 0 },
       { name: "Contactado", order: 2, color: "#2563eb", isWon: 0, isLost: 0 },
@@ -114,32 +74,15 @@ function seedDefaultStages(db: Database.Database): void {
       { name: "Cerrado Ganado", order: 5, color: "#16a34a", isWon: 1, isLost: 0 },
       { name: "Cerrado Perdido", order: 6, color: "#dc2626", isWon: 0, isLost: 1 },
     ];
-
-    const insert = db.prepare(
-      `INSERT OR IGNORE INTO pipeline_stages (id, name, "order", color, is_won, is_lost) VALUES (?, ?, ?, ?, ?, ?)`
-    );
-
-    const seedAll = db.transaction(() => {
-      for (const stage of defaultStages) {
-        insert.run(
-          crypto.randomUUID(),
-          stage.name,
-          stage.order,
-          stage.color,
-          stage.isWon,
-          stage.isLost
-        );
-      }
-    });
-
-    seedAll();
-  } catch {
-    // Seeding can fail if another worker is doing it — that's fine
+    for (const stage of defaultStages) {
+      await client.execute({
+        sql: `INSERT OR IGNORE INTO pipeline_stages (id, name, "order", color, is_won, is_lost) VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [crypto.randomUUID(), stage.name, stage.order, stage.color, stage.isWon, stage.isLost],
+      });
+    }
   }
 }
 
-const sqlite = createDatabase();
-initTables(sqlite);
-seedDefaultStages(sqlite);
+initTables().catch(console.error);
 
-export const db = drizzle(sqlite, { schema });
+export const db = drizzle(client, { schema });
